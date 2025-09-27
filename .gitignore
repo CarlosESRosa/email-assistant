@@ -1,0 +1,46 @@
+# --- Python / Flask ---
+__pycache__/
+*.py[cod]
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.dist-info/
+.build/
+.Python
+.python-version
+
+# Virtualenv
+.venv/
+venv/
+ENV/
+env/
+pip-wheel-metadata/
+
+# Notebooks / caches
+.ipynb_checkpoints/
+.pytest_cache/
+.mypy_cache/
+.cache/
+**/.cache/
+
+# Logs
+*.log
+
+# Sistema
+.DS_Store
+Thumbs.db
+
+# VS Code / IDEs
+.vscode/
+.idea/
+*.code-workspace
+
+# Dados grandes / modelos (não usamos no repo)
+# (deixe aqui caso crie pastas locais)
+models/
+data/
+checkpoints/
+hf_home/
+transformers_cache/
