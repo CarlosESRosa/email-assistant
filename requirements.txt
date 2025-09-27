@@ -1,9 +1,5 @@
 flask
-transformers
-torch
+requests
 nltk
 pdfplumber
 gunicorn
-sentencepiece
-protobuf
-tiktoken

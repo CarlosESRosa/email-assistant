@@ -1,93 +1,100 @@
+import os
 import re
 import string
 import nltk
-from transformers import pipeline
+import requests
 
-# Initialize zero-shot classifier once at module import
-classifier = pipeline("zero-shot-classification", 
-                     model="joeddav/xlm-roberta-large-xnli")
+# -----------------------------
+# Configuração do Hugging Face
+# -----------------------------
+# Modelo zero-shot multilíngue leve (roda na nuvem)
+HF_ENDPOINT = "https://api-inference.huggingface.co/models/MoritzLaurer/mDeBERTa-v3-base-mnli-xnli"
+HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN")
+HF_HEADERS = {"Authorization": f"Bearer {HF_TOKEN}"} if HF_TOKEN else {}
 
-# Get Portuguese stopwords
+# -----------------------------
+# Stopwords PT-BR
+# -----------------------------
 try:
-    stopwords = set(nltk.corpus.stopwords.words('portuguese'))
+    STOPWORDS = set(nltk.corpus.stopwords.words("portuguese"))
 except LookupError:
-    # Fallback if stopwords not downloaded
-    stopwords = set()
+    STOPWORDS = set()
 
-def preprocess_text(text):
-    """Clean and preprocess text for classification."""
-    # Convert to lowercase
+def preprocess_text(text: str) -> str:
+    """Minimamente normaliza o texto (lower, sem pontuação, sem stopwords)."""
     text = text.lower()
-    
-    # Remove punctuation
-    text = text.translate(str.maketrans('', '', string.punctuation))
-    
-    # Remove stopwords
-    words = text.split()
-    words = [word for word in words if word not in stopwords]
-    
-    return ' '.join(words)
+    text = text.translate(str.maketrans("", "", string.punctuation))
+    words = [w for w in text.split() if w not in STOPWORDS]
+    return " ".join(words)
 
-def _has_ids(text):
-    """Check if text contains ticket numbers, CPF, or CNPJ patterns."""
-    # Look for common patterns: numbers, CPF (xxx.xxx.xxx-xx), CNPJ
-    ticket_pattern = r'\b\d{4,}\b'  # 4+ digit numbers
-    cpf_pattern = r'\b\d{3}\.\d{3}\.\d{3}-\d{2}\b'
-    cnpj_pattern = r'\b\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}\b'
-    
-    return bool(re.search(ticket_pattern, text) or 
-                re.search(cpf_pattern, text) or 
+# -----------------------------
+# Heurística simples (fallback)
+# -----------------------------
+def _heuristic_classify(text: str):
+    t = text.lower()
+    impro_signals = ["parabéns", "obrigado", "obrigada", "agradeço", "feliz", "boas festas"]
+    if any(s in t for s in impro_signals):
+        return "Improdutivo", 0.70
+    return "Produtivo", 0.65
+
+def _has_ids(text: str):
+    """Vê se há ticket/CPF/CNPJ para personalizar a resposta."""
+    ticket_pattern = r"\b\d{4,}\b"
+    cpf_pattern = r"\b\d{3}\.\d{3}\.\d{3}-\d{2}\b"
+    cnpj_pattern = r"\b\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}\b"
+    return bool(re.search(ticket_pattern, text) or
+                re.search(cpf_pattern, text) or
                 re.search(cnpj_pattern, text))
 
-def classify_email(text):
-    """Classify email as Produtivo or Improdutivo using zero-shot classification."""
-    # Preprocess text
-    processed_text = preprocess_text(text)
-    
-    # Classify with zero-shot
-    result = classifier(processed_text, 
-                       candidate_labels=["Produtivo", "Improdutivo"])
-    
-    label = result['labels'][0]
-    score = result['scores'][0]
-    
+# -----------------------------
+# Classificação via HF Inference
+# -----------------------------
+def _zero_shot_api(text: str):
+    payload = {
+        "inputs": text,
+        "parameters": {
+            "candidate_labels": ["Produtivo", "Improdutivo"],
+            "multi_label": False
+        }
+    }
+    resp = requests.post(HF_ENDPOINT, headers=HF_HEADERS, json=payload, timeout=25)
+    resp.raise_for_status()
+    data = resp.json()
+    # Formato típico: {"labels": [...], "scores": [...]}
+    label = data["labels"][0]
+    score = float(data["scores"][0])
     return label, score
 
-def suggest_reply(text, label, score, low=0.6):
-    """Generate appropriate reply based on classification and confidence."""
-    
-    # Low confidence - use generic safe reply
+def classify_email(text: str):
+    """Tenta classificar via API; se falhar (sem token/limite), usa heurística."""
+    processed = preprocess_text(text)
+    try:
+        return _zero_shot_api(processed)
+    except Exception:
+        return _heuristic_classify(text)
+
+def suggest_reply(text: str, label: str, score: float, low: float = 0.6):
+    """Gera resposta curta, segura e adequada à classe/nível de confiança."""
     if score < low:
         return ("Olá,\n\n"
-                "Obrigado pelo seu contato. Para que possamos atendê-lo da melhor forma, "
-                "por favor, forneça o número do seu ticket, CPF ou CNPJ.\n\n"
-                "Atenciosamente,\n"
-                "Equipe de Atendimento")
-    
-    # Improdutivo - polite thanks and close
+                "Recebemos sua mensagem. Para agilizar o atendimento, por favor informe "
+                "o número do chamado ou CPF/CNPJ vinculado.\n\n"
+                "Atenciosamente,\nEquipe de Atendimento")
+
     if label == "Improdutivo":
         return ("Olá,\n\n"
-                "Obrigado pelo seu contato e pelas suas palavras.\n\n"
-                "Atenciosamente,\n"
-                "Equipe de Atendimento")
-    
-    # Produtivo - check for IDs and respond accordingly
-    if label == "Produtivo":
-        if _has_ids(text):
-            return ("Olá,\n\n"
-                    "Recebemos sua solicitação e estamos verificando as informações. "
-                    "Retornaremos com uma atualização até o final do expediente.\n\n"
-                    "Atenciosamente,\n"
-                    "Equipe de Atendimento")
-        else:
-            return ("Olá,\n\n"
-                    "Obrigado pelo seu contato. Para que possamos processar sua solicitação, "
-                    "por favor, forneça o número do seu ticket, CPF ou CNPJ.\n\n"
-                    "Atenciosamente,\n"
-                    "Equipe de Atendimento")
-    
-    # Fallback
-    return ("Olá,\n\n"
-            "Obrigado pelo seu contato. Retornaremos em breve.\n\n"
-            "Atenciosamente,\n"
-            "Equipe de Atendimento")
+                "Obrigado pela mensagem! Agradecemos o contato. "
+                "Se precisar de algo relacionado aos seus serviços, é só responder este e-mail.\n\n"
+                "Atenciosamente,\nEquipe de Atendimento")
+
+    # Produtivo
+    if _has_ids(text):
+        return ("Olá,\n\n"
+                "Obrigado pelo contato. Localizamos sua solicitação e já estamos verificando. "
+                "Você receberá uma atualização até o final do expediente.\n\n"
+                "Atenciosamente,\nEquipe de Atendimento")
+    else:
+        return ("Olá,\n\n"
+                "Obrigado pelo contato. Para dar andamento, poderia confirmar o número do chamado "
+                "ou CPF/CNPJ vinculado? Assim atualizamos o status para você o quanto antes.\n\n"
+                "Atenciosamente,\nEquipe de Atendimento")
